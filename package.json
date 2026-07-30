@@ -1,0 +1,85 @@
+{
+  "name": "claude-permission-flash",
+  "displayName": "Claude Permission Flash",
+  "description": "Flashes the VS Code chrome (title bar / status bar / activity bar) when Claude Code is waiting on a permission prompt.",
+  "version": "0.3.1",
+  "publisher": "local",
+  "private": true,
+  "icon": "media/icon.png",
+  "engines": {
+    "vscode": "^1.85.0"
+  },
+  "categories": ["Other"],
+  "activationEvents": ["onStartupFinished"],
+  "main": "./out/extension.js",
+  "contributes": {
+    "commands": [
+      {
+        "command": "claudePermissionFlash.testFlash",
+        "title": "Claude Permission Flash: Test Flash (5s)"
+      },
+      {
+        "command": "claudePermissionFlash.acknowledge",
+        "title": "Claude Permission Flash: Acknowledge (Stop Flash for This Window)"
+      },
+      {
+        "command": "claudePermissionFlash.clearAll",
+        "title": "Claude Permission Flash: Clear All Active Flags"
+      },
+      {
+        "command": "claudePermissionFlash.resetBaseline",
+        "title": "Claude Permission Flash: Reset Baseline Colors to Current"
+      }
+    ],
+    "configuration": {
+      "title": "Claude Permission Flash",
+      "properties": {
+        "claudePermissionFlash.flagDirectory": {
+          "type": "string",
+          "default": "~/.claude/notification-plugin/flags",
+          "description": "Directory watched for permission-prompt flag files, written by the Claude Code hook."
+        },
+        "claudePermissionFlash.activeColor": {
+          "type": "string",
+          "default": "#3B5239",
+          "description": "Background color applied to title bar, status bar, and activity bar while a permission prompt is pending."
+        },
+        "claudePermissionFlash.textColor": {
+          "type": "string",
+          "default": "#f0f0f0",
+          "description": "Foreground/text color used on top of the active color."
+        },
+        "claudePermissionFlash.tintEditorTabs": {
+          "type": "boolean",
+          "default": false,
+          "description": "Also tint the editor tab bar, for a more attention-grabbing (but more intrusive) effect."
+        },
+        "claudePermissionFlash.pollIntervalMs": {
+          "type": "number",
+          "default": 1000,
+          "description": "Fallback polling interval for detecting flag file changes, in case native file watching misses an event."
+        },
+        "claudePermissionFlash.blinkIntervalMs": {
+          "type": "number",
+          "default": 450,
+          "description": "Blink speed (ms per phase) for the specific window that has the pending permission prompt. Other windows show the steady activeColor instead of blinking. Only used when animateFlash is disabled."
+        },
+        "claudePermissionFlash.animateFlash": {
+          "type": "boolean",
+          "default": true,
+          "description": "For the window with the pending prompt, smoothly fade its colors between activeColor and normal (300ms each direction) instead of hard-blinking. Click the status bar notification to stop the flash for that prompt (it resumes on the next one)."
+        }
+      }
+    }
+  },
+  "scripts": {
+    "compile": "tsc -p ./",
+    "watch": "tsc -w -p ./",
+    "package": "npx @vscode/vsce package"
+  },
+  "devDependencies": {
+    "@types/node": "^20.0.0",
+    "@types/vscode": "^1.85.0",
+    "typescript": "^5.4.0"
+  }
+}
