@@ -37,7 +37,7 @@ let flashWriteInFlight = false;
 // permission fade's timing above; not exposed as settings.
 const DONE_PULSE_LEG_MS = 220;
 const DONE_PULSE_STEP_MS = 40;
-const DONE_PULSE_COUNT = 3;
+const DONE_PULSE_COUNT = 2;
 let donePulseInFlight = false;
 
 function expandHome(p: string): string {
