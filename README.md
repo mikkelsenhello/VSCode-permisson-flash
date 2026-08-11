@@ -4,6 +4,11 @@ Flashes VS Code's title bar / status bar / activity bar to a bold color whenever
 Claude Code (running in this Mac) is blocked on a permission prompt, and reverts
 to normal once it's resolved — so you notice it from across the room without sound.
 
+It also gives a **task-done pulse**: a few short, self-clearing flashes in a
+different color when a longer-running turn finishes, so "needs you" and
+"finished, FYI" are never confused at a glance. See [Task-done pulse](#task-done-pulse)
+below.
+
 ## How it works
 
 1. A Claude Code hook (`hooks/permission-flag.sh`, installed at
@@ -53,6 +58,26 @@ If a window has no folder open (an empty/untitled window), there's nowhere to
 write a workspace-level setting, so that window can't blink — it'll just show
 the steady color like any other "other" window.
 
+## Task-done pulse
+
+Separately from the permission flash, the hook script brackets each turn with
+`UserPromptSubmit` (start) and `Stop` (end). If a turn took at least
+`DONE_THRESHOLD_SECONDS` (20s, a constant in the script — edit it there if you
+want a different cutoff) — i.e. it looks like an actual task rather than a
+quick reply — `Stop` writes a one-shot `<session_id>.done.flag`.
+
+The extension picks that up and pulses the owning window's chrome
+`donePulseCount` (fixed at 3) times, in `doneColor` — a different color than
+the permission `activeColor` by default — then clears itself automatically.
+Unlike the permission blink, this doesn't wait for acknowledgment and doesn't
+show a steady "somewhere else" state on other windows: it's a one-time FYI,
+not an ongoing thing to resolve. If the window is mid permission-flash when a
+done flag arrives, the pulse is skipped for that flag (the more urgent signal
+wins) and retried once the flash resolves.
+
+Try it with **Claude Permission Flash: Test Done Flash** from the Command
+Palette — it pulses immediately, bypassing the duration check.
+
 ## Install (unpacked, for personal use)
 
 ```bash
@@ -86,6 +111,7 @@ All under `claudePermissionFlash.*` in VS Code settings:
 - `activeColor` (default `#3B5239`) / `textColor` (default `#f0f0f0`) — the flash color, used both for the steady "other window" look and the "on" end of the flash.
 - `animateFlash` (default `true`) — fade the owning window's colors smoothly between `activeColor` and normal (300ms each direction) instead of hard-blinking. Disable to fall back to the old on/off blink.
 - `blinkIntervalMs` (default `450`) — how fast the owning window blinks. Only used when `animateFlash` is off.
+- `doneColor` (default `#2C5F8A`) / `doneTextColor` (default `#f0f0f0`) — the color used for the task-done pulse (see [Task-done pulse](#task-done-pulse)). Deliberately different from `activeColor` by default.
 - `tintEditorTabs` — also tint the editor tab bar for extra visibility.
 - `flagDirectory` — must match the hook script's `FLAG_DIR` if you change one.
 - `pollIntervalMs` — fallback poll interval in case native file-watching misses an event.
@@ -94,6 +120,7 @@ Commands:
 - **Acknowledge (Stop Flash for This Window)** — also bound to clicking the status bar item; stops the flash for the currently pending prompt in this window without resolving the actual permission request.
 - **Clear All Active Flags** — force-clear if a flag ever gets stuck (e.g. Claude Code was killed mid-prompt).
 - **Reset Baseline Colors to Current** — re-capture your current `workbench.colorCustomizations` as "normal", useful if you change your theme colors later.
+- **Test Done Flash** — pulses the task-done color immediately, bypassing the duration check.
 
 ### A caveat on the animated fade
 

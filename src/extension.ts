@@ -20,6 +20,7 @@ let watcher: fs.FSWatcher | undefined;
 let pollTimer: ReturnType<typeof setInterval> | undefined;
 let statusBarItem: vscode.StatusBarItem | undefined;
 let extensionContext: vscode.ExtensionContext;
+let extensionDisposed = false;
 const acknowledgedSessions = new Set<string>();
 
 // Fixed per spec: a 300ms fade each direction. Not exposed as a setting.
@@ -29,6 +30,15 @@ let flashTimer: ReturnType<typeof setInterval> | undefined;
 let flashT = 0;
 let flashDirection: 1 | -1 = 1;
 let flashWriteInFlight = false;
+
+// "Task done" pulse: a short, finite, self-clearing animation — distinct in
+// both color and shape from the permission blink/fade, which is sustained
+// until the prompt resolves or is acknowledged. Fixed per spec, like the
+// permission fade's timing above; not exposed as settings.
+const DONE_PULSE_LEG_MS = 220;
+const DONE_PULSE_STEP_MS = 40;
+const DONE_PULSE_COUNT = 3;
+let donePulseInFlight = false;
 
 function expandHome(p: string): string {
   if (p === '~') return os.homedir();
@@ -52,22 +62,34 @@ function listFlagFiles(dir: string): string[] {
   }
 }
 
-function readFlags(dir: string, files: string[]): FlagData[] {
-  const result: FlagData[] = [];
+// "Done" flags use a `.done.flag` suffix so they can be told apart from
+// permission flags by filename alone — no need to trust file contents.
+function partitionFlagFiles(files: string[]): { permission: string[]; done: string[] } {
+  const done = files.filter((f) => f.endsWith('.done.flag'));
+  const permission = files.filter((f) => !f.endsWith('.done.flag'));
+  return { permission, done };
+}
+
+function readFlagsWithNames(dir: string, files: string[]): Array<{ file: string; data: FlagData }> {
+  const result: Array<{ file: string; data: FlagData }> = [];
   for (const f of files) {
     try {
       const raw = fs.readFileSync(path.join(dir, f), 'utf8').trim();
       if (!raw) continue;
       try {
-        result.push(JSON.parse(raw));
+        result.push({ file: f, data: JSON.parse(raw) });
       } catch {
-        result.push({ message: raw }); // legacy plain-text flag format
+        result.push({ file: f, data: { message: raw } }); // legacy plain-text flag format
       }
     } catch {
       // ignore
     }
   }
   return result;
+}
+
+function readFlags(dir: string, files: string[]): FlagData[] {
+  return readFlagsWithNames(dir, files).map((r) => r.data);
 }
 
 // A flag "belongs" to this window when its cwd is this window's workspace
@@ -95,11 +117,7 @@ async function ensureBaselineCaptured() {
   }
 }
 
-function buildActiveCustomizations(): Record<string, unknown> {
-  const color = config().get<string>('activeColor', '#3B5239');
-  const textColor = config().get<string>('textColor', '#f0f0f0');
-  const tintTabs = config().get<boolean>('tintEditorTabs', false);
-
+function buildCustomizationsFor(color: string, textColor: string, tintTabs: boolean): Record<string, unknown> {
   const next: Record<string, unknown> = {
     ...getBaseline(),
     'titleBar.activeBackground': color,
@@ -115,6 +133,13 @@ function buildActiveCustomizations(): Record<string, unknown> {
     next['editorGroupHeader.tabsBackground'] = color;
   }
   return next;
+}
+
+function buildActiveCustomizations(): Record<string, unknown> {
+  const color = config().get<string>('activeColor', '#3B5239');
+  const textColor = config().get<string>('textColor', '#f0f0f0');
+  const tintTabs = config().get<boolean>('tintEditorTabs', false);
+  return buildCustomizationsFor(color, textColor, tintTabs);
 }
 
 // Global (User-level) customization is shared by every VS Code window on
@@ -290,9 +315,69 @@ function stopFlashing() {
   stopAnimating();
 }
 
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+// A short, finite pulse for "task done" — distinct from the permission
+// blink/fade both in color and in shape: it runs a fixed number of times
+// and clears itself, rather than continuing until acknowledged.
+async function runDonePulse() {
+  if (!canUseWorkspaceScope() || isMineActive) return;
+
+  const color = config().get<string>('doneColor', '#2C5F8A');
+  const textColor = config().get<string>('doneTextColor', '#f0f0f0');
+  const tintTabs = config().get<boolean>('tintEditorTabs', false);
+  const active = buildCustomizationsFor(color, textColor, tintTabs);
+  const end = buildAnimationEndColors();
+  const steps = Math.max(1, Math.round(DONE_PULSE_LEG_MS / DONE_PULSE_STEP_MS));
+
+  donePulseInFlight = true;
+  try {
+    for (let pulse = 0; pulse < DONE_PULSE_COUNT && !extensionDisposed && !isMineActive; pulse++) {
+      for (const dir of [1, -1] as const) {
+        for (let s = 1; s <= steps; s++) {
+          if (extensionDisposed || isMineActive) break;
+          const t = dir === 1 ? s / steps : 1 - s / steps;
+          const mixed: Record<string, unknown> = { ...getBaseline() };
+          for (const key of Object.keys(end)) {
+            mixed[key] = lerpColor(end[key], active[key] as string, t);
+          }
+          await setWorkspaceOverride(mixed);
+          await sleep(DONE_PULSE_STEP_MS);
+        }
+      }
+    }
+  } finally {
+    donePulseInFlight = false;
+    if (!isMineActive) {
+      await setWorkspaceOverride(undefined);
+    }
+  }
+}
+
+// Done flags are one-shot: claim (delete) the ones belonging to this window
+// and pulse once for the batch, rather than once per flag. Skip entirely
+// while a permission flash owns this window's chrome — the flags are left
+// on disk and retried on the next refresh once that resolves.
+async function processDoneFlags(dir: string, doneFileNames: string[]) {
+  if (doneFileNames.length === 0 || donePulseInFlight || isMineActive) return;
+  const mine = readFlagsWithNames(dir, doneFileNames).filter((d) => isForThisWindow(d.data.cwd));
+  if (mine.length === 0) return;
+  for (const d of mine) {
+    try {
+      fs.unlinkSync(path.join(dir, d.file));
+    } catch {
+      // ignore
+    }
+  }
+  await runDonePulse();
+}
+
 async function refresh() {
   const dir = getFlagDir();
-  const files = listFlagFiles(dir);
+  const allFiles = listFlagFiles(dir);
+  const { permission: files, done: doneFiles } = partitionFlagFiles(allFiles);
   const flags = readFlags(dir, files);
 
   // Drop acknowledgments for sessions whose flag is gone (prompt resolved) so
@@ -343,6 +428,8 @@ async function refresh() {
       await setWorkspaceOverride(undefined);
     }
   }
+
+  await processDoneFlags(dir, doneFiles);
 }
 
 export async function activate(context: vscode.ExtensionContext) {
@@ -426,6 +513,22 @@ export async function activate(context: vscode.ExtensionContext) {
   );
 
   context.subscriptions.push(
+    vscode.commands.registerCommand('claudePermissionFlash.testDoneFlash', async () => {
+      const targetCwd = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
+      const testFlag = path.join(getFlagDir(), '__test__.done.flag');
+      fs.writeFileSync(
+        testFlag,
+        JSON.stringify({
+          type: 'done',
+          message: 'Test done pulse.',
+          cwd: targetCwd,
+        })
+      );
+      await refresh();
+    })
+  );
+
+  context.subscriptions.push(
     vscode.commands.registerCommand('claudePermissionFlash.acknowledge', async () => {
       const d = getFlagDir();
       const flags = readFlags(d, listFlagFiles(d));
@@ -461,6 +564,7 @@ export async function activate(context: vscode.ExtensionContext) {
 
   context.subscriptions.push({
     dispose: () => {
+      extensionDisposed = true;
       watcher?.close();
       if (pollTimer) clearInterval(pollTimer);
       stopFlashing();
@@ -471,6 +575,7 @@ export async function activate(context: vscode.ExtensionContext) {
 }
 
 export async function deactivate() {
+  extensionDisposed = true;
   stopFlashing();
   if (isMineActive) {
     await setWorkspaceOverride(undefined);

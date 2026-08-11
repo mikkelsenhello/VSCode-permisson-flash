@@ -2,7 +2,7 @@
   "name": "claude-permission-flash",
   "displayName": "Claude Permission Flash",
   "description": "Flashes the VS Code chrome (title bar / status bar / activity bar) when Claude Code is waiting on a permission prompt.",
-  "version": "0.3.1",
+  "version": "0.4.0",
   "publisher": "local",
   "private": true,
   "icon": "media/icon.png",
@@ -17,6 +17,10 @@
       {
         "command": "claudePermissionFlash.testFlash",
         "title": "Claude Permission Flash: Test Flash (5s)"
+      },
+      {
+        "command": "claudePermissionFlash.testDoneFlash",
+        "title": "Claude Permission Flash: Test Done Flash"
       },
       {
         "command": "claudePermissionFlash.acknowledge",
@@ -53,6 +57,16 @@
           "type": "boolean",
           "default": false,
           "description": "Also tint the editor tab bar, for a more attention-grabbing (but more intrusive) effect."
+        },
+        "claudePermissionFlash.doneColor": {
+          "type": "string",
+          "default": "#2C5F8A",
+          "description": "Background color used for the short 'task done' pulse, fired when a turn runs long enough to count as a task rather than a quick reply. Deliberately different from activeColor so the two are never confused at a glance."
+        },
+        "claudePermissionFlash.doneTextColor": {
+          "type": "string",
+          "default": "#f0f0f0",
+          "description": "Foreground/text color used on top of doneColor."
         },
         "claudePermissionFlash.pollIntervalMs": {
           "type": "number",
