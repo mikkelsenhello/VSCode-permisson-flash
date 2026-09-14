@@ -54,12 +54,39 @@ function getFlagDir(): string {
   return expandHome(config().get<string>('flagDirectory', '~/.claude/notification-plugin/flags'));
 }
 
-function listFlagFiles(dir: string): string[] {
+// A flag file can be orphaned forever if its Claude Code session ends
+// abruptly (crash, closed window) between writing it and whatever event
+// would normally clear it — leaving the flash stuck on in every window.
+// Purge anything older than staleFlagMinutes so that can't happen.
+function isStaleFlag(dir: string, file: string): boolean {
+  const maxAgeMs = config().get<number>('staleFlagMinutes', 15) * 60 * 1000;
   try {
-    return fs.readdirSync(dir).filter((f) => f.endsWith('.flag'));
+    return Date.now() - fs.statSync(path.join(dir, file)).mtimeMs > maxAgeMs;
+  } catch {
+    return false;
+  }
+}
+
+function listFlagFiles(dir: string): string[] {
+  let files: string[];
+  try {
+    files = fs.readdirSync(dir).filter((f) => f.endsWith('.flag'));
   } catch {
     return [];
   }
+  const fresh: string[] = [];
+  for (const f of files) {
+    if (isStaleFlag(dir, f)) {
+      try {
+        fs.unlinkSync(path.join(dir, f));
+      } catch {
+        // ignore
+      }
+    } else {
+      fresh.push(f);
+    }
+  }
+  return fresh;
 }
 
 // "Done" flags use a `.done.flag` suffix so they can be told apart from

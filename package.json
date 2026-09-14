@@ -43,6 +43,11 @@
           "default": "~/.claude/notification-plugin/flags",
           "description": "Directory watched for permission-prompt flag files, written by the Claude Code hook."
         },
+        "claudePermissionFlash.staleFlagMinutes": {
+          "type": "number",
+          "default": 15,
+          "description": "Flag files older than this are treated as orphaned (e.g. from a crashed or abruptly-closed session) and deleted automatically, so the flash can't get stuck on forever."
+        },
         "claudePermissionFlash.activeColor": {
           "type": "string",
           "default": "#3B5239",
