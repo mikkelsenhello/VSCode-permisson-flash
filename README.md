@@ -114,6 +114,7 @@ All under `claudePermissionFlash.*` in VS Code settings:
 - `doneColor` (default `#2C5F8A`) / `doneTextColor` (default `#f0f0f0`) — the color used for the task-done pulse (see [Task-done pulse](#task-done-pulse)). Deliberately different from `activeColor` by default.
 - `tintEditorTabs` — also tint the editor tab bar for extra visibility.
 - `flagDirectory` — must match the hook script's `FLAG_DIR` if you change one.
+- `staleFlagMinutes` (default `15`) — flag files older than this are treated as orphaned (e.g. left behind by a crashed or abruptly-closed session) and deleted automatically, so the flash can't get stuck on forever.
 - `pollIntervalMs` — fallback poll interval in case native file-watching misses an event.
 
 Commands:
