@@ -3,7 +3,16 @@ import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
 
-const BASELINE_KEY = 'claudePermissionFlash.baselineColorCustomizations';
+// Bumped to .v2: the original key was captured once, at first-ever
+// activation, and trusted forever after that with no way to re-derive it.
+// If that first capture ever happened while a flash/pulse was already
+// applied (e.g. a leftover flag from a prior crash, or activating mid-test),
+// the "normal" colors this extension restores to are permanently the flash
+// color — no amount of clearing flags fixes that, since the code is
+// correctly restoring to what it believes is baseline. Bumping the key
+// forces one fresh, clean re-capture on next activation instead of trusting
+// the old, possibly-poisoned snapshot.
+const BASELINE_KEY = 'claudePermissionFlash.baselineColorCustomizations.v2';
 
 interface FlagData {
   message?: string;
@@ -30,6 +39,33 @@ let flashTimer: ReturnType<typeof setInterval> | undefined;
 let flashT = 0;
 let flashDirection: 1 | -1 = 1;
 let flashWriteInFlight = false;
+
+// Cooperative cancel flag for forceResetColors(): loops that write colors in
+// a tight sequence (the done pulse) check this so they stop enqueueing new
+// writes the moment a force-reset is requested, instead of racing it.
+let forceStopRequested = false;
+
+// Every write to workbench.colorCustomizations (workspace or global scope)
+// goes through one of these two chains so writes always land in the order
+// they were issued. Without this, two concurrent `config().update(...)`
+// calls (e.g. an in-flight animation frame and a "stop flashing, clear the
+// color" call) can resolve out of call order, and whichever one happens to
+// finish last wins — which is how the chrome color gets stuck on a color
+// the extension itself believes it already cleared.
+function makeSerializer() {
+  let chain: Promise<void> = Promise.resolve();
+  return function run(fn: () => Promise<void>): Promise<void> {
+    const result = chain.then(fn, fn);
+    chain = result.then(
+      () => undefined,
+      () => undefined
+    );
+    return result;
+  };
+}
+
+const runWorkspaceWrite = makeSerializer();
+const runGlobalWrite = makeSerializer();
 
 // "Task done" pulse: a short, finite, self-clearing animation — distinct in
 // both color and shape from the permission blink/fade, which is sustained
@@ -173,15 +209,19 @@ function buildActiveCustomizations(): Record<string, unknown> {
 // this machine — this is the steady "something's pending somewhere" look
 // seen by windows that are NOT the one with the actual prompt.
 async function applyGlobalActiveColor() {
-  await vscode.workspace
-    .getConfiguration()
-    .update('workbench.colorCustomizations', buildActiveCustomizations(), vscode.ConfigurationTarget.Global);
+  await runGlobalWrite(async () => {
+    await vscode.workspace
+      .getConfiguration()
+      .update('workbench.colorCustomizations', buildActiveCustomizations(), vscode.ConfigurationTarget.Global);
+  });
 }
 
 async function restoreGlobalBaseline() {
-  await vscode.workspace
-    .getConfiguration()
-    .update('workbench.colorCustomizations', getBaseline(), vscode.ConfigurationTarget.Global);
+  await runGlobalWrite(async () => {
+    await vscode.workspace
+      .getConfiguration()
+      .update('workbench.colorCustomizations', getBaseline(), vscode.ConfigurationTarget.Global);
+  });
 }
 
 function canUseWorkspaceScope(): boolean {
@@ -193,14 +233,16 @@ function canUseWorkspaceScope(): boolean {
 // window blink independently of every other open window.
 async function setWorkspaceOverride(value: Record<string, unknown> | undefined) {
   if (!canUseWorkspaceScope()) return;
-  try {
-    await vscode.workspace
-      .getConfiguration()
-      .update('workbench.colorCustomizations', value, vscode.ConfigurationTarget.Workspace);
-  } catch {
-    // no writable workspace settings (e.g. an untitled/folderless window) —
-    // this window just keeps showing the steady global color instead.
-  }
+  await runWorkspaceWrite(async () => {
+    try {
+      await vscode.workspace
+        .getConfiguration()
+        .update('workbench.colorCustomizations', value, vscode.ConfigurationTarget.Workspace);
+    } catch {
+      // no writable workspace settings (e.g. an untitled/folderless window) —
+      // this window just keeps showing the steady global color instead.
+    }
+  });
 }
 
 async function blinkTick() {
@@ -361,10 +403,10 @@ async function runDonePulse() {
 
   donePulseInFlight = true;
   try {
-    for (let pulse = 0; pulse < DONE_PULSE_COUNT && !extensionDisposed && !isMineActive; pulse++) {
+    for (let pulse = 0; pulse < DONE_PULSE_COUNT && !extensionDisposed && !isMineActive && !forceStopRequested; pulse++) {
       for (const dir of [1, -1] as const) {
         for (let s = 1; s <= steps; s++) {
-          if (extensionDisposed || isMineActive) break;
+          if (extensionDisposed || isMineActive || forceStopRequested) break;
           const t = dir === 1 ? s / steps : 1 - s / steps;
           const mixed: Record<string, unknown> = { ...getBaseline() };
           for (const key of Object.keys(end)) {
@@ -377,7 +419,10 @@ async function runDonePulse() {
     }
   } finally {
     donePulseInFlight = false;
-    if (!isMineActive) {
+    // Skip the clear here if a force-reset is in progress — it already
+    // issues its own (later-queued) clear, and this one would just be an
+    // extra redundant write racing behind it.
+    if (!isMineActive && !forceStopRequested) {
       await setWorkspaceOverride(undefined);
     }
   }
@@ -403,8 +448,7 @@ async function processDoneFlags(dir: string, doneFileNames: string[]) {
 
 async function refresh() {
   const dir = getFlagDir();
-  const allFiles = listFlagFiles(dir);
-  const { permission: files, done: doneFiles } = partitionFlagFiles(allFiles);
+  const { permission: files, done: doneFiles } = partitionFlagFiles(listFlagFiles(dir));
   const flags = readFlags(dir, files);
 
   // Drop acknowledgments for sessions whose flag is gone (prompt resolved) so
@@ -457,6 +501,24 @@ async function refresh() {
   }
 
   await processDoneFlags(dir, doneFiles);
+}
+
+// Unconditionally puts both scopes' chrome colors back to baseline, ignoring
+// what refresh()'s isMineActive/isGlobalActive bookkeeping currently
+// believes. refresh() only ever writes colors on a state *transition*, so if
+// a color ever got stuck out of sync with that bookkeeping (e.g. a past
+// write race), simply deleting flags and calling refresh() again does
+// nothing — this is the actual "un-stick it" escape hatch.
+async function forceResetColors(): Promise<void> {
+  stopFlashing();
+  forceStopRequested = true;
+  isGlobalActive = false;
+  isMineActive = false;
+  try {
+    await Promise.all([setWorkspaceOverride(undefined), restoreGlobalBaseline()]);
+  } finally {
+    forceStopRequested = false;
+  }
 }
 
 export async function activate(context: vscode.ExtensionContext) {
@@ -577,12 +639,29 @@ export async function activate(context: vscode.ExtensionContext) {
           // ignore
         }
       }
+      // Force the colors back to baseline unconditionally, rather than
+      // relying on refresh()'s transition detection — see forceResetColors().
+      await forceResetColors();
       await refresh();
     })
   );
 
   context.subscriptions.push(
+    vscode.commands.registerCommand('claudePermissionFlash.forceReset', async () => {
+      await forceResetColors();
+      await refresh();
+      vscode.window.showInformationMessage('Claude Permission Flash: chrome colors force-reset to baseline.');
+    })
+  );
+
+  context.subscriptions.push(
     vscode.commands.registerCommand('claudePermissionFlash.resetBaseline', async () => {
+      if (isMineActive || isGlobalActive) {
+        vscode.window.showWarningMessage(
+          'Claude Permission Flash: a flash is currently active — resolve it (or run "Force Reset Colors") before setting a new baseline, otherwise the flash color gets baked in as "normal".'
+        );
+        return;
+      }
       const current = vscode.workspace.getConfiguration().get<Record<string, unknown>>('workbench.colorCustomizations') || {};
       await extensionContext.globalState.update(BASELINE_KEY, current);
       vscode.window.showInformationMessage('Claude Permission Flash: current colors saved as the baseline to restore to.');

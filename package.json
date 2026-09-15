@@ -2,9 +2,8 @@
   "name": "claude-permission-flash",
   "displayName": "Claude Permission Flash",
   "description": "Flashes the VS Code chrome (title bar / status bar / activity bar) when Claude Code is waiting on a permission prompt.",
-  "version": "0.4.0",
-  "publisher": "local",
-  "private": true,
+  "version": "0.4.4",
+  "publisher": "mikkelsen",
   "icon": "media/icon.png",
   "engines": {
     "vscode": "^1.85.0"
@@ -29,6 +28,10 @@
       {
         "command": "claudePermissionFlash.clearAll",
         "title": "Claude Permission Flash: Clear All Active Flags"
+      },
+      {
+        "command": "claudePermissionFlash.forceReset",
+        "title": "Claude Permission Flash: Force Reset Colors (Stuck Flash Fix)"
       },
       {
         "command": "claudePermissionFlash.resetBaseline",

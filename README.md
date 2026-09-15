@@ -119,8 +119,9 @@ All under `claudePermissionFlash.*` in VS Code settings:
 
 Commands:
 - **Acknowledge (Stop Flash for This Window)** — also bound to clicking the status bar item; stops the flash for the currently pending prompt in this window without resolving the actual permission request.
-- **Clear All Active Flags** — force-clear if a flag ever gets stuck (e.g. Claude Code was killed mid-prompt).
-- **Reset Baseline Colors to Current** — re-capture your current `workbench.colorCustomizations` as "normal", useful if you change your theme colors later.
+- **Clear All Active Flags** — deletes all flag files and unconditionally forces the chrome colors back to baseline (see **Force Reset Colors** below) — use this if a flag ever gets stuck (e.g. Claude Code was killed mid-prompt).
+- **Force Reset Colors (Stuck Flash Fix)** — if the title/status/activity bar color is ever stuck on the flash color even though nothing is actually pending, run this: it stops all flashing and rewrites both the workspace and global chrome colors back to baseline regardless of what the extension thinks its current state is. (`Clear All Active Flags` does this too, plus deletes flags — this is the same fix on its own.)
+- **Reset Baseline Colors to Current** — re-capture your current `workbench.colorCustomizations` as "normal", useful if you change your theme colors later. Refuses to run while a flash is active, since that would bake the flash color in as "normal".
 - **Test Done Flash** — pulses the task-done color immediately, bypassing the duration check.
 
 ### A caveat on the animated fade
